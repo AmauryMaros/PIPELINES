@@ -1,0 +1,119 @@
+import os
+
+configfile: "config.yaml"
+
+# Load samples
+with open(config["samples"]) as f:
+    SAMPLES = [line.strip() for line in f if line.strip()]
+
+# Ensure output directories exist
+for d in [config["assembly"], config["contigs"], config["graphs"], config["stats"], config["logs"], config["slurm_logs"]]:
+    os.makedirs(d, exist_ok=True)
+
+rule all:
+    input:
+        expand("contigs/{sample}.contigs.fasta", sample=SAMPLES),
+        expand("stats/{sample}.stats.Assembly.txt", sample=SAMPLES),
+        expand("graphs/{sample}.assembly_graph_after_simplification.gfa", sample=SAMPLES),
+        expand("graphs/{sample}.assembly_graph.fastg", sample=SAMPLES)
+
+# 1) Assembly
+rule metaspades:
+    input:
+        pe1=lambda wildcards: f"{config['datadir']}/{wildcards.sample}.R1.fq.gz",
+        pe2=lambda wildcards: f"{config['datadir']}/{wildcards.sample}.R2.fq.gz",
+        se=lambda wildcards: f"{config['datadir']}/{wildcards.sample}.unpaired.fq.gz"
+    output:
+        "assembly/{sample}/contigs.fasta"
+    threads: config["metaspades_threads"]
+    resources:
+        mem=config["metaspades_memory"]
+    log:
+        "logs/metaspades/{sample}.log"
+    shell:
+        """
+        # Run METASPADES
+        metaspades.py -o assembly/{wildcards.sample} -k 21,33,55 \
+            -1 {input.pe1} -2 {input.pe2} -s {input.se} \
+            -t {threads} -m {resources.mem} &> {log} || echo "METASPADES failed for {wildcards.sample}" > {log}.fail
+
+        # Clean ASSEMBLY directory
+        rm -rf assembly/{wildcards.sample}/corrected \
+               assembly/{wildcards.sample}/K21 \
+               assembly/{wildcards.sample}/K33 \
+               assembly/{wildcards.sample}/K55 \
+               assembly/{wildcards.sample}/tmp \
+               assembly/{wildcards.sample}/misc \
+               assembly/{wildcards.sample}/pipeline_state
+
+        rm -f assembly/{wildcards.sample}/assembly_graph_with_scaffolds.gfa \
+              assembly/{wildcards.sample}/before_rr.fasta \
+              assembly/{wildcards.sample}/*.paths \
+              assembly/{wildcards.sample}/dataset.info \
+              assembly/{wildcards.sample}/first_pe_contigs.fasta \
+              assembly/{wildcards.sample}/input_dataset.yaml \
+              assembly/{wildcards.sample}/params.txt \
+              assembly/{wildcards.sample}/scaffolds.fasta \
+              assembly/{wildcards.sample}/strain_graph.gfa
+        """
+
+# 2) Rename/move contigs
+rule rename_contigs:
+    input:
+        "assembly/{sample}/contigs.fasta"
+    output:
+        "contigs/{sample}.contigs.fasta"
+    log:
+        "logs/rename_contigs/{sample}.log"
+    threads: config["cp_threads"]
+    resources:
+        mem=config["cp_mem"]
+    shell:
+        """
+        cp {input} {output} &> {log} || echo "Rename failed for {wildcards.sample}" > {log}.fail
+        """
+
+# 3) Contig stats
+rule contig_stats:
+    input:
+        "contigs/{sample}.contigs.fasta"
+    output:
+        "stats/{sample}.stats.Assembly.txt"
+    log:
+        "logs/stats/{sample}.log"
+    threads: config["cp_threads"]
+    resources:
+        mem=config["cp_mem"]
+    shell:
+        r"""
+        awk -v RS='>' -v infile={input} 'BEGIN {{print "Output\tInput File"}} NR>1 {{print NF "\t" infile}}' {input} > {output} 2> {log} || echo "Stats failed for {wildcards.sample}" > {log}.fail
+        """
+
+# 4) Copy graphs
+rule copy_graphs:
+    output:
+        fastg="graphs/{sample}.assembly_graph.fastg",
+        gfa="graphs/{sample}.assembly_graph_after_simplification.gfa"
+    log:
+        "logs/graphs/{sample}.log"
+    threads: config["cp_threads"]
+    resources:
+        mem=config["cp_mem"]
+    shell:
+        """
+        # fastg
+        if [ -f assembly/{wildcards.sample}/assembly_graph.fastg ]; then
+            cp assembly/{wildcards.sample}/assembly_graph.fastg {output.fastg} &>> {log}
+        else
+            echo "Warning: No fastg for {wildcards.sample}" &>> {log}
+            touch {output.fastg}
+        fi
+
+        # gfa
+        if [ -f assembly/{wildcards.sample}/assembly_graph_after_simplification.gfa ]; then
+            cp assembly/{wildcards.sample}/assembly_graph_after_simplification.gfa {output.gfa} &>> {log}
+        else
+            echo "Warning: No gfa for {wildcards.sample}" &>> {log}
+            touch {output.gfa}
+        fi
+        """
