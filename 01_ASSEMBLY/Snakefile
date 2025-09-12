@@ -10,6 +10,7 @@ with open(config["samples"]) as f:
 for d in [config["assembly"], config["contigs"], config["graphs"], config["stats"], config["logs"], config["slurm_logs"]]:
     os.makedirs(d, exist_ok=True)
 
+# Rule all: define final outputs
 rule all:
     input:
         expand("contigs/{sample}.contigs.fasta", sample=SAMPLES),
@@ -17,12 +18,12 @@ rule all:
         expand("graphs/{sample}.assembly_graph_after_simplification.gfa", sample=SAMPLES),
         expand("graphs/{sample}.assembly_graph.fastg", sample=SAMPLES)
 
-# 1) Assembly
+# 1) MetaSPAdes assembly
 rule metaspades:
     input:
-        pe1=lambda wildcards: f"{config['datadir']}/{wildcards.sample}.R1.fq.gz",
-        pe2=lambda wildcards: f"{config['datadir']}/{wildcards.sample}.R2.fq.gz",
-        se=lambda wildcards: f"{config['datadir']}/{wildcards.sample}.unpaired.fq.gz"
+        pe1=lambda wc: f"{config['datadir']}/{wc.sample}.R1.fq.gz",
+        pe2=lambda wc: f"{config['datadir']}/{wc.sample}.R2.fq.gz",
+        se=lambda wc: f"{config['datadir']}/{wc.sample}.unpaired.fq.gz"
     output:
         "assembly/{sample}/contigs.fasta"
     threads: config["metaspades_threads"]
@@ -32,12 +33,12 @@ rule metaspades:
         "logs/metaspades/{sample}.log"
     shell:
         """
-        # Run METASPADES
+        # Run MetaSPAdes
         metaspades.py -o assembly/{wildcards.sample} -k 21,33,55 \
             -1 {input.pe1} -2 {input.pe2} -s {input.se} \
-            -t {threads} -m {resources.mem} &> {log} || echo "METASPADES failed for {wildcards.sample}" > {log}.fail
+            -t {threads} -m {resources.mem} &> {log} || (echo "METASPADES failed for {wildcards.sample}" &> {log} && exit 1)
 
-        # Clean ASSEMBLY directory
+        # Clean unnecessary intermediate files
         rm -rf assembly/{wildcards.sample}/corrected \
                assembly/{wildcards.sample}/K21 \
                assembly/{wildcards.sample}/K33 \
@@ -69,11 +70,9 @@ rule rename_contigs:
     resources:
         mem=config["cp_mem"]
     shell:
-        """
-        cp {input} {output} &> {log} || echo "Rename failed for {wildcards.sample}" > {log}.fail
-        """
+        "cp {input} {output} &> {log}"
 
-# 3) Contig stats
+# 3) Contig statistics
 rule contig_stats:
     input:
         "contigs/{sample}.contigs.fasta"
@@ -86,11 +85,13 @@ rule contig_stats:
         mem=config["cp_mem"]
     shell:
         r"""
-        awk -v RS='>' -v infile={input} 'BEGIN {{print "Output\tInput File"}} NR>1 {{print NF "\t" infile}}' {input} > {output} 2> {log} || echo "Stats failed for {wildcards.sample}" > {log}.fail
+        awk -v RS='>' -v infile={input} 'BEGIN {{print "Output\tInput File"}} NR>1 {{print NF "\t" infile}}' {input} > {output} 2> {log}
         """
 
-# 4) Copy graphs
+# 4) Copy assembly graphs
 rule copy_graphs:
+    input:
+        "assembly/{sample}/contigs.fasta"
     output:
         fastg="graphs/{sample}.assembly_graph.fastg",
         gfa="graphs/{sample}.assembly_graph_after_simplification.gfa"
@@ -101,7 +102,7 @@ rule copy_graphs:
         mem=config["cp_mem"]
     shell:
         """
-        # fastg
+        # Copy fastg
         if [ -f assembly/{wildcards.sample}/assembly_graph.fastg ]; then
             cp assembly/{wildcards.sample}/assembly_graph.fastg {output.fastg} &>> {log}
         else
@@ -109,7 +110,7 @@ rule copy_graphs:
             touch {output.fastg}
         fi
 
-        # gfa
+        # Copy gfa
         if [ -f assembly/{wildcards.sample}/assembly_graph_after_simplification.gfa ]; then
             cp assembly/{wildcards.sample}/assembly_graph_after_simplification.gfa {output.gfa} &>> {log}
         else
