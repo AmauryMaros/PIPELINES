@@ -7,6 +7,7 @@ This pipeline performs assembly of vaginal metagenomes using `metaSPAdes` and is
 ## Requirements
 
 - Pre-processed metagenome reads
+- `samples.txt` file with metagenome IDs (see example file)
 - [Snakemake](https://snakemake.readthedocs.io/en/stable/) installed
 - (Optional) Access to a SLURM-based HPC cluster for large datasets
 
